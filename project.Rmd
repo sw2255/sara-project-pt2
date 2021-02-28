@@ -13,7 +13,7 @@ library(lubridate)
 ####I. Load Data
 ```{r}
 #Student Life data
-d <- "/Users/sarawang/Documents/Academic/Cornell Tech/Spring 2021/Big Data in Medicine/Module2_mHealth"
+d <- "/Users/sarawang/Documents/Academic/Cornell Tech/Spring 2021/Big Data in Medicine/Module2_mHealth/project"
 #define function to read data
 read_data <- function(schema, table){
   dat <- readRDS(paste0(d, "/dataset_rds/", schema, "/", table, ".Rds"))
@@ -22,7 +22,7 @@ read_data <- function(schema, table){
 #SL_table #Print the structure of the data. The data contains five schemas, and each schema contains several tables. 
 
 #Grades data
-grades_df <- read.csv("/Users/sarawang/Documents/Academic/Cornell Tech/Spring 2021/Big Data in Medicine/Module2_mHealth/grades.csv")
+grades_df <- read.csv("/Users/sarawang/Documents/Academic/Cornell Tech/Spring 2021/Big Data in Medicine/Module2_mHealth/project/grades.csv")
 gpa <- subset(grades_df,select=(-c(gpa.13s,cs.65))) #we only care about the cumulative gpa, so drop the other gpa cols
 
 #format uid so we can join with other data later
@@ -309,6 +309,10 @@ pred <- gpa.lm_all %>% predict(x_df)
 mae(pred,actual)
 rsq(pred,actual)
 ```
+```{r}
+plot(actual, resid(gpa.lm_all), ylab="Residuals", xlab="Cumulative GPA", main="All Vars")
+abline(0,0)
+```
 
 ```{r}
 #lin reg excluding social_med and rate_med per bivariate analysis
@@ -319,25 +323,34 @@ summary(gpa.lm_1)
 pred_1 <- gpa.lm_1 %>% predict(x_df)
 mae(pred_1,actual)
 rsq(pred_1,actual)
-```
 
+plot(actual, resid(gpa.lm_1), ylab="Residuals", xlab="Cumulative GPA", main="Excluding social_med and rate_med")
+abline(0,0)
+```
 ```{r}
 #lin reg with means only
 gpa.lm_mean <- lm(formula = gpa.all ~ unlock_mean_day + unlock_mean_night + unlock_mean_sleep + total_working_mean + productivity_mean + rate_mean + social_mean,  
               data = merged_df)
 summary(gpa.lm_mean)
+
 pred_mean <- gpa.lm_mean %>% predict(x_df)
 mae(pred_mean,actual)
 rsq(pred_mean,actual)
+
+plot(actual, resid(gpa.lm_mean), ylab="Residuals", xlab="Cumulative GPA", main = "Means Only")
+abline(0,0)
 ```
 
 ```{r}
-#lin reg with medians only (excluding social_med and rate_med per bivariate analysis)
-gpa.lm_med <- lm(formula = gpa.all ~ unlock_med_day + unlock_med_night + unlock_med_sleep + total_working_med + productivity_med,  
+#lin reg with medians only
+gpa.lm_med <- lm(formula = gpa.all ~ unlock_med_day + unlock_med_night + unlock_med_sleep + total_working_med + productivity_med + rate_med + social_med,  
               data = merged_df)
 summary(gpa.lm_med)
 
 pred_med <- gpa.lm_med %>% predict(x_df)
 mae(pred_med,actual)
 rsq(pred_med,actual)
+
+plot(actual, resid(gpa.lm_med), ylab="Residuals", xlab="Cumulative GPA", main = "Medians Only")
+abline(0,0)
 ```
