@@ -1,0 +1,343 @@
+#Project Part II
+#Sara Wang
+
+```{r}
+library(imputeTS)
+library(studentlife)
+library(stringr)  
+library(tidyr)
+library(tidyverse)
+library(lubridate)
+```
+
+####I. Load Data
+```{r}
+#Student Life data
+d <- "/Users/sarawang/Documents/Academic/Cornell Tech/Spring 2021/Big Data in Medicine/Module2_mHealth"
+#define function to read data
+read_data <- function(schema, table){
+  dat <- readRDS(paste0(d, "/dataset_rds/", schema, "/", table, ".Rds"))
+  return(dat)
+}
+#SL_table #Print the structure of the data. The data contains five schemas, and each schema contains several tables. 
+
+#Grades data
+grades_df <- read.csv("/Users/sarawang/Documents/Academic/Cornell Tech/Spring 2021/Big Data in Medicine/Module2_mHealth/grades.csv")
+gpa <- subset(grades_df,select=(-c(gpa.13s,cs.65))) #we only care about the cumulative gpa, so drop the other gpa cols
+
+#format uid so we can join with other data later
+gpa_fmt <- gpa %>%
+  mutate(uid_fmt = sub("u0","",uid))
+gpa_fmt$uid_fmt <- sub("u","",gpa_fmt$uid_fmt)
+gpa_fmt
+
+```
+
+####II. Build Features
+
+##A. Passive data
+
+#Phone lock data
+```{r}
+lock <- read_data("sensing", "phonelock")
+lock
+
+#Transform both of the Unix timestamps into Year_Month_Day Hour_Minute_Seconds format.
+#Create the duration column which equals to end_timestamp - start_timestamp.
+#Create the time_region using start_timestamp and rules same as before.
+phone_lock_dated <- lock %>%
+  mutate(start_timestamp = as.POSIXct(start_timestamp, origin="1970-01-01"),
+         end_timestamp = as.POSIXct(end_timestamp, origin="1970-01-01"),
+         dur_lock = end_timestamp - start_timestamp,
+         inflate_dur = dur_lock,
+         date = format(start_timestamp, "%d"),
+         hour_day = hour(start_timestamp),
+         time_region = case_when(hour_day >= 9 & hour_day <= 18 ~ "day",
+                                 hour_day > 18 ~ "night",
+                                 TRUE ~ "sleep"))
+
+#Group by uid, time_region, and the timestamp you just created
+phone_lock_dated <- phone_lock_dated %>% 
+  mutate(months = format(start_timestamp, "%m"),
+         timestamp = paste0("2013", months, date),
+         timestamp = ymd(timestamp))
+
+#Sum of unlocked durations in each time region per day 
+lock_region <- phone_lock_dated %>% 
+  group_by(timestamp, uid, time_region) %>% 
+  summarise(unlock_dur = sum(inflate_dur)) 
+lock_region
+
+#get mean and median per time region across all days for each user
+lock_sum <- lock_region %>%
+  group_by(uid, time_region) %>%
+  summarise(unlock_mean = mean(unlock_dur),
+            unlock_med = median(unlock_dur)) %>% 
+  pivot_wider(names_from = time_region,
+              values_from = c(unlock_mean,unlock_med),
+              values_fill = as.difftime(0, units = "hours"))
+lock_sum
+```
+
+##B. EMA data
+
+#Activity
+
+```{r}
+ema_act_df <- read_data("EMA", "Activity")[c(7,5,8,3)]
+ema_act_df
+
+#impute missing values
+usage <- c("working", "other_working")
+ema_act <- ema_act_df %>% split(f = ema_act_df$uid)
+for(i in 1:length(ema_act)){
+  ex =  ema_act[[i]]
+  for(j in usage){
+    currentVar = ex[, j] %>% unlist()
+    if(all(is.na(currentVar))){
+      currentVar <- rep(mean(ema_act_df[,j]), length(currentVar))
+    }else{
+      if(is.na(currentVar[1])){
+        currentVar[1] = mean(currentVar, na.rm = T) 
+      }
+    }  
+    ex[, j]  =  na_locf(currentVar, option = "locf")
+  }
+  ema_act[[i]] = ex
+}
+ema_act <- bind_rows(ema_act)
+
+#format timestamp
+ema_act_dat <- ema_act %>% 
+  mutate(timestamp =as.POSIXct(timestamp, origin="1970-01-01"),
+         date = format(timestamp, "%d"),
+         months = format(timestamp, "%m"),
+         timestamp = paste0("2013", months, date),
+        timestamp = ymd(timestamp)) %>%
+  mutate(total_working = working + other_working)
+
+#get mean for instances where there are multiple responses per day
+ema_act_dat_avg <- ema_act_dat %>%
+  group_by(uid,timestamp) %>%
+    summarise(total_working_avg = mean(total_working))
+ema_act_dat_avg
+
+#get median and mean values for the entire timeframe
+ema_act_sum <- ema_act_dat_avg %>%
+  group_by(uid) %>%
+    summarise(total_working_mean = mean(total_working_avg),
+              total_working_med = median(total_working_avg))
+ema_act_sum
+
+```
+#Sleep
+```{r}
+ema_sleep_df <- read_data("EMA", "Sleep")[c(6,4,3,5)]
+ema_sleep_df
+
+#impute missing values
+usage <- c("rate", "social")
+ema_sleep <- ema_sleep_df %>% split(f = ema_sleep_df$uid)
+for(i in 1:length(ema_sleep)){
+  ex =  ema_sleep[[i]]
+  for(j in usage){
+    currentVar = ex[, j] %>% unlist()
+    if(all(is.na(currentVar))){
+      currentVar <- rep(mean(ema_sleep_df[,j]), length(currentVar))
+    }else{
+      if(is.na(currentVar[1])){
+        currentVar[1] = mean(currentVar, na.rm = T) 
+      }
+    }  
+    ex[, j]  =  na_locf(currentVar, option = "locf")
+  }
+  ema_sleep[[i]] = ex
+}
+ema_sleep_imp <- bind_rows(ema_sleep)
+ema_sleep_imp
+
+#format timestamp
+ema_sleep_dat <- ema_sleep_imp %>% 
+  mutate(timestamp = as.POSIXct(timestamp, origin="1970-01-01"),
+         date = format(timestamp, "%d"),
+         months = format(timestamp, "%m"),
+         timestamp = paste0("2013", months, date),
+        timestamp = ymd(timestamp))
+
+#get mean for instances where there are multiple responses per day
+ema_sleep_daily <- ema_sleep_dat %>%
+  group_by(uid,timestamp) %>%
+    summarise(rate_avg = mean(rate),
+              social_avg = mean(social))
+ema_sleep_daily
+
+#get median and mean values for the entire timeframe
+ema_sleep_sum <- ema_sleep_daily %>%
+  group_by(uid) %>%
+    summarise(rate_mean = mean(rate_avg),
+              rate_med = median(rate_avg),
+              social_mean = mean(social_avg),
+              social_med = median(social_avg))
+ema_sleep_sum
+```
+
+#Study Spaces
+```{r}
+ema_study_df <- read_data("EMA", "Study Spaces")[c(6,5,4)]
+ema_study_df
+
+#impute missing values
+usage <- c("productivity")
+ema_study <- ema_study_df %>% split(f = ema_study_df$uid)
+for(i in 1:length(ema_study)){
+  ex =  ema_study[[i]]
+  for(j in usage){
+    currentVar = ex[, j] %>% unlist()
+    if(all(is.na(currentVar))){
+      currentVar <- rep(mean(ema_study_df[,j]), length(currentVar))
+    }else{
+      if(is.na(currentVar[1])){
+        currentVar[1] = mean(currentVar, na.rm = T) 
+      }
+    }  
+    ex[, j]  =  na_locf(currentVar, option = "locf")
+  }
+  ema_study[[i]] = ex
+}
+ema_study_imp <- bind_rows(ema_study)
+ema_study_imp
+
+#format timestamp
+ema_study_dat <- ema_study_imp %>% 
+  mutate(timestamp =as.POSIXct(timestamp, origin="1970-01-01"),
+         date = format(timestamp, "%d"),
+         months = format(timestamp, "%m"),
+         timestamp = paste0("2013", months, date),
+        timestamp = ymd(timestamp))
+
+#get mean for instances where there are multiple responses per day
+ema_study_daily <- ema_study_dat %>%
+  group_by(uid,timestamp) %>%
+    summarise(productivity_avg = mean(productivity))
+ema_study_daily
+
+#get median and mean values for the entire timeframe
+ema_study_sum <- ema_study_daily %>%
+  group_by(uid) %>%
+    summarise(productivity_mean = mean(productivity_avg),
+              productivity_med = median(productivity_avg))
+ema_study_sum
+```
+
+####III. Join data
+
+```{r}
+#gpa_fmt
+#lock_sum
+#ema_act_sum
+#ema_study_sum
+#ema_sleep_sum
+
+#merge predictors
+temp_df <- merge(x = lock_sum, y = ema_act_sum, by = "uid", all = TRUE)
+temp_df <- merge(x = temp_df, y = ema_study_sum, by = "uid", all = TRUE)
+temp_df <- merge(x = temp_df, y = ema_sleep_sum, by = "uid", all = TRUE)
+temp_df
+
+#merge temp predictor df with target var df
+merged_df <- merge(x = gpa_fmt, y = temp_df, by.x = "uid_fmt", by.y = "uid", all.x = TRUE)
+merged_df <- subset(merged_df, select = -uid_fmt)
+
+#impute 0 for missing values
+merged_df[is.na(merged_df)] <- 0
+
+merged_df
+```
+
+####IV. Bivariate Analysis
+
+```{r}
+library(ggplot2)
+
+cols <- colnames(merged_df)[-c(1,2)]
+cols
+
+for (i in cols){
+  plt <- ggplot(merged_df, aes(x = merged_df[[i]], y = gpa.all)) + geom_point(shape=1) + xlab(i)
+  print(plt)
+  #fn = paste(i,".png", sep="")
+  #ggsave(filename=fn)
+}
+
+#social_med, rate_med
+#productivity_med?
+```
+
+
+####V. Prediction
+
+```{r}
+actual <- merged_df$gpa.all
+actual
+x_df <- subset(merged_df,select=-gpa.all)
+x_df
+```
+
+```{r}
+#x = pred, y = actual
+
+#function to calculate mae
+mae <- function(x,y) mean(abs(y-x)) 
+
+#function to calculate rsquare
+rsq <- function(x,y) {
+  rss <- sum((x - y) ^ 2)
+  tss <- sum((y - mean(y)) ^ 2)
+  rsq <- 1 - rss/tss
+  return(rsq)
+}
+```
+
+```{r}
+#lin reg with all vars
+gpa.lm_all <- lm(formula = gpa.all ~ unlock_mean_day + unlock_mean_night + unlock_mean_sleep + unlock_med_day + unlock_med_night + unlock_med_sleep + total_working_mean + total_working_med + productivity_mean + productivity_med + rate_mean + rate_med + social_mean + social_med, 
+             data = merged_df)
+
+summary(gpa.lm_all)
+
+pred <- gpa.lm_all %>% predict(x_df)
+mae(pred,actual)
+rsq(pred,actual)
+```
+
+```{r}
+#lin reg excluding social_med and rate_med per bivariate analysis
+gpa.lm_1 <- lm(formula = gpa.all ~ unlock_mean_day + unlock_mean_night + unlock_mean_sleep + unlock_med_day + unlock_med_night + unlock_med_sleep + total_working_mean + total_working_med + productivity_mean + productivity_med + rate_mean + social_mean,  
+              data = merged_df)
+summary(gpa.lm_1)
+
+pred_1 <- gpa.lm_1 %>% predict(x_df)
+mae(pred_1,actual)
+rsq(pred_1,actual)
+```
+
+```{r}
+#lin reg with means only
+gpa.lm_mean <- lm(formula = gpa.all ~ unlock_mean_day + unlock_mean_night + unlock_mean_sleep + total_working_mean + productivity_mean + rate_mean + social_mean,  
+              data = merged_df)
+summary(gpa.lm_mean)
+pred_mean <- gpa.lm_mean %>% predict(x_df)
+mae(pred_mean,actual)
+rsq(pred_mean,actual)
+```
+
+```{r}
+#lin reg with medians only (excluding social_med and rate_med per bivariate analysis)
+gpa.lm_med <- lm(formula = gpa.all ~ unlock_med_day + unlock_med_night + unlock_med_sleep + total_working_med + productivity_med,  
+              data = merged_df)
+summary(gpa.lm_med)
+
+pred_med <- gpa.lm_med %>% predict(x_df)
+mae(pred_med,actual)
+rsq(pred_med,actual)
+```
